@@ -1,0 +1,72 @@
+#!/usr/bin/perl -l
+
+# Copyright (c) 2006 Shawn M Moore
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy 
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights 
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+# copies of the Software, and to permit persons to whom the Software is 
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in al
+# copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# ttygrep2 - a variation of ttygrep that's slower but better
+# it uses and searches Term::VT102::Boundless
+# this allows you to search for output spanning multiple frames
+# but it is anywhere between 25 and 100 times slower
+
+use strict;
+use warnings;
+use Term::VT102::Boundless;
+
+if (!defined $ARGV[1])
+{
+  print "Usage: $0 <pattern> <file> [<file>...]";
+  exit (defined $ARGV[0]);
+}
+
+my $pattern = shift @ARGV;
+
+TTYREC: foreach my $file (@ARGV)
+{
+  open my $handle, '<', $file or die "$0: Unable to open '$file': $!";
+  
+  my $frame = 0;
+  my $vt = new Term::VT102::Boundless;
+
+  while (1)
+  {
+    my $hdr;
+    my $hgot = read $handle, $hdr, 12;
+    next TTYREC if $hgot == 0; # clean EOF
+    die "$0: Unexpected EOF in '$file' frame header\n" if $hgot < 12;
+    
+    my @hdrvals = unpack "VVV", $hdr;
+    my $dlen = $hdrvals[2];
+    my $data;
+    my $dgot = read $handle, $data, $dlen;
+	  die "$0: Unexpected EOF in '$file' frame data\n" if $dgot < $dlen;
+
+    # Uncomment for a much quicker but less powerful version.
+    # print "$file:$frame: $1" if $data =~ /($pattern)/;
+
+    $vt->process($data);
+    foreach my $row (1..$vt->rows)
+    {
+      print "$file:$frame:$row: $1" if $vt->row_plaintext($row) =~ /($pattern)/o;
+    }
+
+    ++$frame;
+  }
+}
+

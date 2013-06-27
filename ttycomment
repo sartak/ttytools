@@ -1,0 +1,145 @@
+#!/usr/bin/perl
+
+# Copyright (c) 2006 Shawn M Moore
+
+# Permission is hereby granted, free of charge, to any person obtaining a copy 
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights 
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell 
+# copies of the Software, and to permit persons to whom the Software is 
+# furnished to do so, subject to the following conditions:
+
+# The above copyright notice and this permission notice shall be included in 
+# all copies or substantial portions of the Software.
+
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR 
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, 
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE 
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER 
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+# ttycomment 1.1 - add commentary to a ttyrec
+# see http://sartak.katron.org/nh/commentary/ for example scripts
+# if you commentate a ttyrec, I'd love to see it: sartak at google's mail dot com
+
+# changelog:
+# 1.1 - add <num>S - increase time next frame is on screen by <num>S.
+#       (every commented frame has an implicit 2S before it)
+
+use strict;
+use warnings;
+
+die "Usage: $0 <ttyrec> <script>" if @ARGV != 2;
+my @script;
+my $row  = 25;
+my $mode = 1;
+my $nextsec = 2;
+
+# READ IN SCRIPT
+{
+  local @ARGV = pop @ARGV;
+  while (<>)
+  {
+    # C++-style line comments are used because they're much rarer than #
+    s{//.*}{};
+    # ignore blank lines
+    next unless /\S/;
+
+    # set row
+    if (/^\s*R\s*(\d+)\s*$/)
+    {
+      $row = $1;
+      next;
+    }
+
+    # set mode
+    if (/^\s*M\s*(\d+)\s*$/)
+    {
+      $mode = $1;
+      next;
+    }
+    
+    # additional wait time for next frame (default 2s)
+    if (/^\s*S\s*(\d+)\s*$/)
+    {
+      $nextsec = $1;
+      next;
+    }
+
+    # allow script to use "\e" for escape char
+    s/\\e/\e/g;
+
+    # commentary line
+    die "Malformed script line $.." unless /^\s*(\d+)\s*(.*?)\s*$/;
+    $script[$1] = [$row, $2, $nextsec];
+    $nextsec = 2;
+
+    if ($mode == 1)
+    {
+      # autoclear after one frame if in mode 1
+      $script[$1+1] = [$row, '', 0];
+    }
+  }
+}
+
+my $frame   = 0;
+my $offset  = 0;
+my $offset2 = 0;
+my ($lastline, $lastrow) = ('', $row);
+
+# FILTER TTYREC
+open(my $handle, '<', $ARGV[0]) or die "Unable to open '$ARGV[0]': $!";
+
+while ((my $hgot = read $handle, my $hdr, 12))
+{
+  last if $hgot == 0; # clean EOF
+  die "Unexpected EOF in '$ARGV[0]' frame $frame header (expected 12 bytes, got $hgot)" if $hgot < 12;
+
+  my @hval = unpack "VVV", $hdr;
+  my $dlen = $hval[2];
+  my $dgot = read $handle, my ($data), $dlen;
+
+  die "Unexpected EOF in '$ARGV[0]' frame $frame data (expected $dlen bytes, got $dgot)" if $dgot < $dlen;
+
+  # if we have commentary for this frame
+  if ($frame < @script && defined($script[$frame]))
+  {
+    if ($script[$frame][1] eq '')
+    {
+      # clear previous commentary line
+      $data = "\e[s\e[${lastrow}H\e[2K\e[u" . $data;
+    }
+    else
+    {
+      # add new commentary
+      $data .= "\e[s\e[$script[$frame][0]H\e[44m$script[$frame][1]\e[0m\e[0K\e[u";
+
+      # add more time to the current frame with <num>S
+      $offset2 = $script[$frame][2];
+    }
+    # cache this line in case we're in mode 2
+    $lastline = $script[$frame][1];
+    $lastrow = $script[$frame][0];
+  }
+  # no commentary for this frame, we'll copy the previous commentary again
+  elsif ($lastline ne '')
+  {
+    # print previous commentary line again
+    $data .= "\e[s\e[${lastrow}H\e[44m$lastline\e[0m\e[0K\e[u";
+  }
+
+  $hval[2] = length($data);
+
+  # we need to modify the time of the _next_ frame to change the current
+  # frame's time on the screen.. $offset is the total offset from this frame
+  # and prior, offset2 is the delta offset for this frame to next frame
+  $hval[0] += $offset;
+  $offset += $offset2;
+  $offset2 = 0;
+  
+  print ((pack "VVV", @hval) . $data); 
+  ++$frame;
+}
+

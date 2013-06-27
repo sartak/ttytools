@@ -1,0 +1,118 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+use Term::TtyRec::Plus;
+
+my $concat = 0;
+@ARGV = grep {$_ eq "-c" ? do {$concat = 1; 0} : 1} @ARGV;
+
+sub serialize
+{
+  my $seconds = int shift;
+  my $hours = int($seconds / 3600);
+  $seconds %= 3600;
+  my $minutes = int($seconds / 60);
+  $seconds %= 60;
+  return sprintf '%02d:%02d:%02d', $hours, $minutes, $seconds;
+}
+
+my $total_time     = 0;
+my $thresh10_time  = 0;
+my $thresh3_time   = 0;
+my $thresh10_trunc = 0;
+my $thresh3_trunc  = 0;
+my $frame          = 0;
+my $data_length    = 0;
+my $longest_time   = 0;
+my $start          = '';
+my $end            = '';
+
+sub ttyinfo
+{
+  my $filename = shift;
+  my $concat = shift;
+  my $ttp = new Term::TtyRec::Plus(infile => $filename);
+  
+  if (not $concat)
+  {
+    $total_time     = 0;
+    $thresh10_time  = 0;
+    $thresh3_time   = 0;
+    $thresh10_trunc = 0;
+    $thresh3_trunc  = 0;
+    $frame          = 0;
+    $data_length    = 0;
+    $longest_time   = 0;
+    $start          = '';
+    $end            = '';
+  }
+
+  while (my $frame_ref = $ttp->next_frame())
+  {
+    ++$frame;
+    $start = $frame_ref->{timestamp} if $frame == 1;
+    $end = $frame_ref->{timestamp};
+
+    $total_time += $frame_ref->{diff};
+    $longest_time = $frame_ref->{diff} if $frame_ref->{diff} > $longest_time;
+
+    for ([10, \$thresh10_trunc, \$thresh10_time],
+         [3,  \$thresh3_trunc,  \$thresh3_time])
+    {
+      if ($frame_ref->{diff} > $_->[0])
+      {
+        $frame_ref->{diff} = $_->[0];
+        ++${$_->[1]};
+      }
+      ${$_->[2]} += $frame_ref->{diff};
+    }
+
+    $data_length   += length $frame_ref->{data};
+  }
+
+  return "No frames in file '$filename'\n" if $frame == 0;
+
+  my $format = << "EOH";
+File:         %s
+Frames:       %d
+Begin:        %s
+End:          %s
+Time:         %s (%fs)
+T10 time:     %s (%fs) (%dt)
+T3 time:      %s (%fs) (%dt)
+Data length:  %d bytes
+Total length: %d bytes
+Longest time: %s (%fs)
+Avg time:     %s (%fs)
+Avg T10 time: %s (%fs)
+Avg T3 time:  %s (%fs)
+Avg data len: %f bytes
+EOH
+
+  return sprintf $format,
+    $filename, 
+    $frame,
+    scalar localtime($start),
+    scalar localtime($end),
+    serialize($total_time),    $total_time,
+    serialize($thresh10_time), $thresh10_time, $thresh10_trunc,
+    serialize($thresh3_time),  $thresh3_time,  $thresh3_trunc,
+    $data_length,
+    $data_length + 12*$frame,
+    serialize($longest_time), $longest_time,
+    serialize($total_time/$frame), $total_time/$frame,
+    serialize($thresh10_time/$frame), $thresh10_time/$frame,
+    serialize($thresh3_time/$frame), $thresh10_time/$frame,
+    $data_length/$frame,
+}
+
+my @output = map {ttyinfo($_, $concat)} @ARGV;
+if ($concat)
+{
+  $output[-1] =~ s/File:.+\n//;
+  print $output[-1];
+}
+else
+{
+  print join "---\n", @output;
+}
